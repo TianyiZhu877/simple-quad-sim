@@ -1,6 +1,8 @@
 import scipy.spatial.transform
 import numpy as np
 from animate_function import QuadPlotter
+import matplotlib.pyplot as plt
+from neural_fly.utils import save_data, load_data
 
 def quat_mult(q, p):
     # q * p
@@ -76,6 +78,9 @@ class Robot:
         self.state = self.reset_state_and_input(np.array([1.0, 0.0, 0.0]), np.array([1.0, 0.0, 0.0, 0.0]))
         self.time = 0.0
 
+        self.times = [self.time]
+        self.states = self.state[np.newaxis, :]
+
     def reset_state_and_input(self, init_xyz, init_quat_wxyz):
         state0 = np.zeros(NO_STATES)
         state0[IDX_POS_X:IDX_POS_Z+1] = init_xyz
@@ -108,6 +113,9 @@ class Robot:
         self.state += x_dot * dt
         self.state[IDX_QUAT_W:IDX_QUAT_Z+1] /= np.linalg.norm(self.state[IDX_QUAT_W:IDX_QUAT_Z+1]) # Re-normalize quaternion.
         self.time += dt
+
+        self.states = np.vstack([self.states, self.state])
+        self.times.append(self.time)
 
     def control(self, p_d_I):
         p_I = self.state[IDX_POS_X:IDX_POS_Z+1]
@@ -145,7 +153,23 @@ class Robot:
         B_inv = np.linalg.inv(B)
         omega_motor_square = B_inv @ np.concatenate([np.array([thrust]), tau])
         omega_motor = np.sqrt(np.clip(omega_motor_square, 0, None))
+
+        omega_motor = np.array([-50, 10,20, 10])
         return omega_motor
+
+    def get_state_dict(self):
+        result = dict()
+        result['t'] = np.array(self.times)
+
+        field_names = ['p', 'v', 'q', 'w']
+        field_idxs = [IDX_POS_X, IDX_VEL_X, IDX_QUAT_W, IDX_OMEGA_X, NO_STATES]
+        for i,field_name in enumerate(field_names):
+            # range_min = field_idxs[i]
+            # range_max = field_idxs[i+1] if i<len(field_idxs)-1 else NO_STATES
+            result[field_name] = self.states[:, field_idxs[i]:field_idxs[i+1]]
+
+        return result
+
 
 PLAYBACK_SPEED = 1
 CONTROL_FREQUENCY = 200 # Hz for attitude control loop
@@ -165,6 +189,8 @@ def get_pos_full_quadcopter(quad):
     pos_full_quad = quadWorldFrame[0:3]
     return pos_full_quad
 
+
+
 def control_propellers(quad):
     t = quad.time
     T = 1.5
@@ -182,6 +208,16 @@ def main():
 
     plotter = QuadPlotter()
     plotter.plot_animation(control_loop)
+
+    plt.plot(quadcopter.states[:, IDX_OMEGA_X])
+    plt.plot(quadcopter.states[:, IDX_OMEGA_Y])
+    plt.show()
+
+    print(list(quadcopter.get_state_dict().keys()))
+
+    if input("save data y/n: ")[0] == 'y':
+        save_data([quadcopter.get_state_dict()], 'neural_fly/data/hw2', 'test0', fields = list(quadcopter.get_state_dict().keys()))
+    # print(quadcopter.body_frame)
 
 if __name__ == "__main__":
     main()

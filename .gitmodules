@@ -1,0 +1,6 @@
+[submodule "neural-fly"]
+	path = neural-fly
+	url = https://github.com/aerorobotics/neural-fly.git
+[submodule "neural_fly"]
+	path = neural_fly
+	url = https://github.com/aerorobotics/neural-fly.git
