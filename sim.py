@@ -45,8 +45,17 @@ IDX_OMEGA_X = 10
 IDX_OMEGA_Y = 11
 IDX_OMEGA_Z = 12
 
+IDX_P_D_X = 0
+IDX_P_D_Y = 1
+IDX_P_D_Z = 2
+IDX_V_D_X = 3
+IDX_V_D_Y = 4
+IDX_V_D_Z = 5
+IDX_CTRL_INPUT_MAX = 6
+
+NUM_ROTORS = 4
+
 class Robot:
-    
     '''
     frames:
         B - body frame
@@ -78,8 +87,12 @@ class Robot:
         self.state = self.reset_state_and_input(np.array([1.0, 0.0, 0.0]), np.array([1.0, 0.0, 0.0, 0.0]))
         self.time = 0.0
 
-        self.times = [self.time]
-        self.states = self.state[np.newaxis, :]
+        # self.times = [self.time]
+        # self.states = self.state[np.newaxis, :]
+        self.times = []
+        self.states = np.empty((0,NO_STATES))
+        self.references = np.empty((0,IDX_CTRL_INPUT_MAX))
+        self.ctrl_outputs = np.empty((0,NUM_ROTORS))
 
     def reset_state_and_input(self, init_xyz, init_quat_wxyz):
         state0 = np.zeros(NO_STATES)
@@ -89,7 +102,7 @@ class Robot:
         state0[IDX_OMEGA_X:IDX_OMEGA_Z+1] = np.array([0.0, 0.0, 0.0])
         return state0
 
-    def update(self, omegas_motor, dt):
+    def update(self, omegas_motor, dt, f = np.array([0,0,0])):
         p_I = self.state[IDX_POS_X:IDX_POS_Z+1]
         v_I = self.state[IDX_VEL_X:IDX_VEL_Z+1]
         q = self.state[IDX_QUAT_W:IDX_QUAT_Z+1]
@@ -104,7 +117,7 @@ class Robot:
         tau_z = self.constant_drag * (omegas_motor[0]**2 - omegas_motor[1]**2 + omegas_motor[2]**2 - omegas_motor[3]**2)
         tau_b = np.array([tau_x, tau_y, tau_z])
 
-        v_dot = 1 / self.m * R @ f_b + np.array([0, 0, -9.81])
+        v_dot = 1 / self.m * R @ f_b + np.array([0, 0, -9.81]) + 1/self.m * f
         omega_dot = self.J_inv @ (np.cross(self.J @ omega, omega) + tau_b)
         q_dot = 1 / 2 * quat_mult(q, [0, *omega])
         p_dot = v_I
@@ -117,7 +130,8 @@ class Robot:
         self.states = np.vstack([self.states, self.state])
         self.times.append(self.time)
 
-    def control(self, p_d_I):
+    def control(self, p_d_I, v_d_I = np.zeros(3)):
+        
         p_I = self.state[IDX_POS_X:IDX_POS_Z+1]
         v_I = self.state[IDX_VEL_X:IDX_VEL_Z+1]
         q = self.state[IDX_QUAT_W:IDX_QUAT_Z+1]
@@ -154,19 +168,27 @@ class Robot:
         omega_motor_square = B_inv @ np.concatenate([np.array([thrust]), tau])
         omega_motor = np.sqrt(np.clip(omega_motor_square, 0, None))
 
-        omega_motor = np.array([-50, 10,20, 10])
+        # omega_motor = np.array([-50, 10,20, 10])
+
+        self.references = np.vstack([self.references, np.concatenate([p_d_I, v_d_I])])
+        self.ctrl_outputs = np.vstack([self.ctrl_outputs, omega_motor])
+
         return omega_motor
 
     def get_state_dict(self):
         result = dict()
         result['t'] = np.array(self.times)
+        result['pwm'] = self.ctrl_outputs
 
-        field_names = ['p', 'v', 'q', 'w']
-        field_idxs = [IDX_POS_X, IDX_VEL_X, IDX_QUAT_W, IDX_OMEGA_X, NO_STATES]
-        for i,field_name in enumerate(field_names):
-            # range_min = field_idxs[i]
-            # range_max = field_idxs[i+1] if i<len(field_idxs)-1 else NO_STATES
-            result[field_name] = self.states[:, field_idxs[i]:field_idxs[i+1]]
+        field_names_list = [['p', 'v', 'q', 'w'], ['p_d','v_d']]
+        field_idxs_list = [[IDX_POS_X, IDX_VEL_X, IDX_QUAT_W, IDX_OMEGA_X, NO_STATES], [IDX_P_D_X, IDX_V_D_X, IDX_CTRL_INPUT_MAX]]
+        self_logs_list = [self.states, self.references]
+
+        for field_names, field_idxs, self_logs in zip(field_names_list, field_idxs_list, self_logs_list):
+            for i,field_name in enumerate(field_names):
+                # range_min = field_idxs[i]
+                # range_max = field_idxs[i+1] if i<len(field_idxs)-1 else NO_STATES
+                result[field_name] = self_logs[:, field_idxs[i]:field_idxs[i+1]]
 
         return result
 
@@ -195,9 +217,27 @@ def control_propellers(quad):
     t = quad.time
     T = 1.5
     r = 2*np.pi * t / T
-    prop_thrusts = quad.control(p_d_I = np.array([np.cos(r/2), np.sin(r), 0.0]))
+
+
+    
+    F_wind = np.zeros(3)
+
+    # if t > 1.0:
+    #     print("Wind is blowing!")
+    #     F_wind = np.array([-10.0, 0, 0])
+        
+    omega_w = np.array([1,1,1.1])
+    F0_w = np.array([10, 6, 2])/3
+    phi_w = np.array((1,2,3))
+    phi_w = np.array((3,1,2))
+    F_wind = F0_w*np.sin(omega_w*t+phi_w)
+
+    # p_d_I = np.array([np.cos(r/2), np.sin(r), 0.0])
+    p_d_I = np.array([1.0, 0.0, 0.0])
+
+    prop_thrusts = quad.control(p_d_I = p_d_I)
     # Note: for Hover mode, just replace the desired trajectory with [1, 0, 1]
-    quad.update(prop_thrusts, dt)
+    quad.update(prop_thrusts, dt, f = F_wind)
 
 def main():
     quadcopter = Robot()
@@ -209,14 +249,26 @@ def main():
     plotter = QuadPlotter()
     plotter.plot_animation(control_loop)
 
-    plt.plot(quadcopter.states[:, IDX_OMEGA_X])
-    plt.plot(quadcopter.states[:, IDX_OMEGA_Y])
+    # plottings:
+    plt.plot(quadcopter.states[:, IDX_POS_X], quadcopter.states[:, IDX_POS_Y], label = 'actual')
+    plt.plot(quadcopter.references[:, IDX_P_D_X], quadcopter.references[:, IDX_P_D_Y], label = 'reference', marker='x')
+    plt.xlabel('p_x')
+    plt.ylabel('p_y')
+
+    # plt.plot(quadcopter.times, quadcopter.states[:, IDX_OMEGA_X], label = 'w_x')
+    # plt.plot(quadcopter.times, quadcopter.states[:, IDX_OMEGA_Y], label = 'w_y')
+
+    # plt.xlabel('t')
+    plt.xlim(-1, 2)
+    plt.ylim(-1, 2)
+    plt.legend()
     plt.show()
 
-    print(list(quadcopter.get_state_dict().keys()))
+    # print(list(quadcopter.get_state_dict().keys()))
 
-    if input("save data y/n: ")[0] == 'y':
-        save_data([quadcopter.get_state_dict()], 'neural_fly/data/hw2', 'test0', fields = list(quadcopter.get_state_dict().keys()))
+    filename = input("save data, n for no: ")
+    if  filename != 'n' and filename != 'q':
+        save_data([quadcopter.get_state_dict()], 'neural_fly/data/hw2', filename, fields = list(quadcopter.get_state_dict().keys()))
     # print(quadcopter.body_frame)
 
 if __name__ == "__main__":
